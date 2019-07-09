@@ -1,123 +1,137 @@
 package com.radixdlt.examples;
 
+import com.google.common.collect.ImmutableMap;
 import com.radixdlt.client.application.RadixApplicationAPI;
+import com.radixdlt.client.application.RadixApplicationAPI.Result;
+import com.radixdlt.client.application.RadixApplicationAPI.Transaction;
 import com.radixdlt.client.application.identity.RadixIdentities;
 import com.radixdlt.client.application.identity.RadixIdentity;
+import com.radixdlt.client.application.translate.data.DecryptedMessage;
+import com.radixdlt.client.application.translate.data.SendMessageAction;
+import com.radixdlt.client.application.translate.tokens.TransferTokensAction;
+import com.radixdlt.client.application.translate.unique.PutUniqueIdAction;
+import com.radixdlt.client.atommodel.accounts.RadixAddress;
 import com.radixdlt.client.core.Bootstrap;
-import com.radixdlt.client.core.RadixUniverse;
-import com.radixdlt.client.core.address.RadixAddress;
-import com.radixdlt.client.core.network.AtomSubmissionUpdate;
-import com.radixdlt.client.core.network.AtomSubmissionUpdate.AtomSubmissionState;
-import com.radixdlt.client.dapps.messaging.RadixMessaging;
-import com.radixdlt.client.dapps.wallet.RadixWallet;
-import io.reactivex.Completable;
-import io.reactivex.Single;
+import com.radixdlt.client.core.atoms.particles.RRI;
 import java.math.BigDecimal;
+import java.util.Arrays;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
+import org.radix.utils.RadixConstants;
 
 /**
  * A service which sends tokens to whoever sends it a message through
  * a Radix Universe.
  */
 public class Faucet {
-
-	/**
-	 * The amount of time a requestor must wait to make subsequent token requests
-	 */
-	private final static long DELAY = 1000 * 60 * 10; //10min
+	private static final String RADIX_BOOTSTRAP_CONFIG_ENV_NAME = "RADIX_BOOTSTRAP_CONFIG";
+	private static final String RADIX_IDENTITY_KEY_FILE_ENV_NAME = "RADIX_IDENTITY_KEY_FILE";
+	private static final String RADIX_IDENTITY_KEY_FILE_PASSWORD_ENV_NAME = "RADIX_IDENTITY_KEY_FILE_PASSWORD";
+	private static final String FAUCET_TOKEN_RRI_ENV_NAME = "FAUCET_TOKEN_RRI";
+	private static final String FAUCET_DELAY_ENV_NAME = "FAUCET_DELAY";
+	private static final String UNIQUE_MESSAGE_PREFIX = "faucet-msg-";
+	private static final String UNIQUE_SEND_TOKENS_PREFIX = "faucet-tx-";
+	private static final long DEFAULT_DELAY = 1000 * 60 * 10; //10min
 
 	private final RadixApplicationAPI api;
-	private final RadixMessaging messaging;
-	private final RadixWallet wallet;
+	private final RRI tokenRRI;
+	private final BigDecimal amountToSend;
+	private final long delay;
 
-	/**
-	 * A faucet created on the default universe
-	 *
-	 * @param api
-	 */
-	private Faucet(RadixApplicationAPI api) {
-		this.api = api;
-		this.messaging = new RadixMessaging(api);
-		this.wallet = new RadixWallet(api);
+	private Faucet(RadixApplicationAPI api, RRI tokenRRI, BigDecimal amountToSend, long delay) {
+		this.tokenRRI = Objects.requireNonNull(tokenRRI);
+		this.api = Objects.requireNonNull(api);
+		this.amountToSend = Objects.requireNonNull(amountToSend);
+		this.delay = delay;
 	}
 
 	/**
-	 * Send XRD from this account to an address
+	 * Send tokens from this account to an address
 	 *
-	 * @param to the address to send to
+	 * @param msg the msg received
 	 * @return completable whether transfer was successful or not
 	 */
-	private Completable leakFaucet(RadixAddress to) {
-		return this.wallet.send(new BigDecimal(10), to)
-			.toObservable()
-			.doOnNext(state -> System.out.println("Transaction: " + state))
-			.filter(AtomSubmissionUpdate::isComplete)
-			.firstOrError()
-			.flatMapCompletable(update -> update.getState() == AtomSubmissionState.STORED ?
-				Completable.complete() : Completable.error(new RuntimeException(update.toString()))
-			);
-	}
+	private void leakFaucet(RateLimiter rateLimiter, DecryptedMessage msg) {
+		RRI msgMutexAcquire = RRI.of(api.getAddress(), UNIQUE_MESSAGE_PREFIX + msg.getActionId());
+		RRI transferMutexAcquire = RRI.of(api.getAddress(), UNIQUE_SEND_TOKENS_PREFIX + msg.getActionId());
 
-	/**
-	 * Actually send a reply message to the requestor through the Universe
-	 *
-	 * @param message message to send back
-	 * @param to address to send message back to
-	 * @return state of the message atom submission
-	 */
-	private Completable sendReply(String message, RadixAddress to) {
-		return messaging.sendMessage(message, to)
-			.toCompletable()
-			.doOnComplete(() -> System.out.println("Sent reply"));
+		if (!rateLimiter.check()) {
+			Transaction hastyMsg = this.api.createTransaction();
+			hastyMsg.stage(SendMessageAction.create(
+				api.getAddress(),
+				msg.getFrom(),
+				("Don't be hasty! Time remaining before new request accepted: " + rateLimiter.getTimeLeftString())
+					.getBytes(RadixConstants.STANDARD_CHARSET),
+				true
+			));
+			hastyMsg.stage(PutUniqueIdAction.create(msgMutexAcquire));
+			hastyMsg.stage(PutUniqueIdAction.create(transferMutexAcquire));
+			hastyMsg.commitAndPush().toObservable().subscribe(System.out::println, Throwable::printStackTrace);
+			return;
+		}
+
+		Transaction transaction = this.api.createTransaction();
+		transaction.stage(TransferTokensAction.create(tokenRRI, api.getAddress(), msg.getFrom(), amountToSend));
+		transaction.stage(PutUniqueIdAction.create(transferMutexAcquire));
+		Result result = transaction.commitAndPush();
+		result.toObservable().subscribe(
+			s -> System.out.println("Send tokens for " + msg.getActionId() + ": " + s),
+			e -> System.out.println("Could not send tokens: " + e)
+		);
+		result.toCompletable().subscribe(
+			() -> {
+				Transaction sentRadsMsg = this.api.createTransaction();
+				byte[] msgBytes = ("Sent you " + amountToSend + " " + tokenRRI.getName()).getBytes(RadixConstants.STANDARD_CHARSET);
+				sentRadsMsg.stage(SendMessageAction.create(api.getAddress(), msg.getFrom(), msgBytes, true));
+				sentRadsMsg.stage(PutUniqueIdAction.create(msgMutexAcquire));
+				sentRadsMsg.commitAndPush().toObservable().subscribe(System.out::println, Throwable::printStackTrace);
+			},
+			e -> {
+				Transaction sentRadsMsg = this.api.createTransaction();
+				byte[] msgBytes = ("Couldn't send you any (Reason: " + e.getMessage() + ")").getBytes(RadixConstants.STANDARD_CHARSET);
+				sentRadsMsg.stage(SendMessageAction.create(api.getAddress(), msg.getFrom(), msgBytes, true));
+				sentRadsMsg.stage(PutUniqueIdAction.create(msgMutexAcquire));
+				sentRadsMsg.commitAndPush().toObservable().subscribe(System.out::println, Throwable::printStackTrace);
+			}
+		);
 	}
 
 	/**
 	 * Start and run the faucet service
 	 */
 	public void run() {
-		final RadixAddress sourceAddress = api.getMyAddress();
+		api.pull();
 
+		final RadixAddress sourceAddress = api.getAddress();
+
+		System.out.println("Faucet Token: " + tokenRRI);
 		System.out.println("Faucet Address: " + sourceAddress);
 
 		// Print out current balance of faucet
-		wallet.getBalance()
+		api.observeBalance(tokenRRI)
 			.subscribe(
 				balance -> System.out.println("Faucet Balance: " + balance),
 				Throwable::printStackTrace
-			)
-		;
+			);
 
-		api.getData(api.getMyAddress()).subscribe(System.out::println, Throwable::printStackTrace);
-
-		// Flow Logic
-		// Listen to any recent messages, send 10 XRD to the sender and then send a confirmation whether it succeeded or not
-		// NOTE: this is neither idempotent nor atomic!
-		messaging
-			.getAllMessagesGroupedByParticipants()
+		api.observeMessages()
+			.groupBy(DecryptedMessage::getFrom)
 			.subscribe(observableByAddress -> {
-				final RadixAddress from = observableByAddress.getKey();
-				final RateLimiter rateLimiter = new RateLimiter(DELAY);
+				final RateLimiter rateLimiter = new RateLimiter(delay);
 
 				observableByAddress
 					.doOnNext(System.out::println) // Print out all messages
 					.filter(message -> !message.getFrom().equals(sourceAddress)) // Don't send ourselves money
-					.filter(message -> Math.abs(message.getTimestamp() - System.currentTimeMillis()) < 60000) // Only deal with recent messages
-					.flatMapSingle(message -> {
-						if (rateLimiter.check()) {
-							return this.leakFaucet(from)
-								.doOnComplete(rateLimiter::reset)
-								.andThen(Single.just("Sent you 10 Test Rads!"))
-								.onErrorReturn(throwable -> "Couldn't send you any (Reason: " + throwable.getMessage() + ")");
-						} else {
-							return Single.just(
-								"Don't be hasty! You can only make one request every 10 minutes. "
-								+ rateLimiter.getTimeLeftString() + " left."
-							);
-						}
-					}, true)
-					.flatMapCompletable(msg -> this.sendReply(msg, from))
-					.subscribe();
+					.subscribe(message -> this.leakFaucet(rateLimiter, message), Throwable::printStackTrace);
 			});
+
+		try {
+			TimeUnit.SECONDS.sleep(5);
+		} catch (InterruptedException e) {
+		}
 	}
 
 	/**
@@ -133,8 +147,8 @@ public class Faucet {
 
 		String getTimeLeftString() {
 			long timeSince = System.currentTimeMillis() - lastTimestamp.get();
-			long secondsTimeLeft = ((DELAY - timeSince) / 1000) % 60;
-			long minutesTimeLeft = ((DELAY - timeSince) / 1000) / 60;
+			long secondsTimeLeft = ((this.millis - timeSince) / 1000) % 60;
+			long minutesTimeLeft = ((this.millis - timeSince) / 1000) / 60;
 			return minutesTimeLeft + " minutes and " + secondsTimeLeft + " seconds";
 		}
 
@@ -148,25 +162,33 @@ public class Faucet {
 	}
 
 	public static void main(String[] args) throws Exception {
-		if (args.length < 3) {
-			System.out.println("Usage: java com.radixdlt.client.services.Faucet <highgarden|sunstone|winterfell|winterfell_local> <keyfile> <password>");
-			System.exit(-1);
+		final String universeOptions = String.join("|", Arrays.stream(Bootstrap.values()).map(Bootstrap::name).collect(Collectors.toList()));
+		final Map<String, String> requiredEnvVars = ImmutableMap.of(
+			RADIX_BOOTSTRAP_CONFIG_ENV_NAME, " must be set to: <" + universeOptions + ">",
+			FAUCET_TOKEN_RRI_ENV_NAME, " must be set to: <rri-of-token>",
+			RADIX_IDENTITY_KEY_FILE_ENV_NAME, "must be set to: <path-to-keyfile>",
+			RADIX_IDENTITY_KEY_FILE_PASSWORD_ENV_NAME, "must be set to: <password>"
+		);
+
+		for (String envVar : requiredEnvVars.keySet()) {
+			String val = System.getenv(envVar);
+			if (val == null) {
+				System.out.println("Env var " + envVar + requiredEnvVars.get(envVar));
+				System.exit(-1);
+			}
 		}
 
-		String universeString = args[0];
-		String keyFile = args[1];
-		String password = args[2];
-
-		RadixUniverse.bootstrap(Bootstrap.valueOf(universeString.toUpperCase()));
-
-		RadixUniverse.getInstance()
-			.getNetwork()
-			.getStatusUpdates()
-			.subscribe(System.out::println);
-
+		final String universeString = System.getenv(RADIX_BOOTSTRAP_CONFIG_ENV_NAME);
+		final String tokenRRIString = System.getenv(FAUCET_TOKEN_RRI_ENV_NAME);
+		final String faucetDelayString = System.getenv(FAUCET_DELAY_ENV_NAME);
+		final String keyFile = System.getenv(RADIX_IDENTITY_KEY_FILE_ENV_NAME);
+		final String password = System.getenv(RADIX_IDENTITY_KEY_FILE_PASSWORD_ENV_NAME);
 		final RadixIdentity faucetIdentity = RadixIdentities.loadOrCreateEncryptedFile(keyFile, password);
-		final RadixApplicationAPI api = RadixApplicationAPI.create(faucetIdentity);
-		Faucet faucet = new Faucet(api);
+		final RadixApplicationAPI api = RadixApplicationAPI.create(Bootstrap.valueOf(universeString), faucetIdentity);
+		final RRI tokenRRI = RRI.fromString(tokenRRIString);
+		final long delay = faucetDelayString != null ? Long.parseLong(faucetDelayString) : DEFAULT_DELAY;
+
+		Faucet faucet = new Faucet(api, tokenRRI, BigDecimal.valueOf(10.0), delay);
 		faucet.run();
 	}
 }
