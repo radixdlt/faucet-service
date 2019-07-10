@@ -26,6 +26,7 @@ import org.radix.utils.RadixConstants;
  * a Radix Universe.
  */
 public class Faucet {
+	private static final String RADIX_IDENTITY_UNENCRYPTED_KEY_FILE_ENV_NAME = "RADIX_IDENTITY_UNENCRYPTED_KEY_FILE";
 	private static final String RADIX_IDENTITY_KEY_FILE_ENV_NAME = "RADIX_IDENTITY_KEY_FILE";
 	private static final String RADIX_IDENTITY_KEY_FILE_PASSWORD_ENV_NAME = "RADIX_IDENTITY_KEY_FILE_PASSWORD";
 	private static final String FAUCET_TOKEN_RRI_ENV_NAME = "FAUCET_TOKEN_RRI";
@@ -177,9 +178,18 @@ public class Faucet {
 		final BootstrapConfig config = RadixEnv.getBootstrapConfig();
 		final String tokenRRIString = System.getenv(FAUCET_TOKEN_RRI_ENV_NAME);
 		final String faucetDelayString = System.getenv(FAUCET_DELAY_ENV_NAME);
-		final String keyFile = System.getenv(RADIX_IDENTITY_KEY_FILE_ENV_NAME);
-		final String password = System.getenv(RADIX_IDENTITY_KEY_FILE_PASSWORD_ENV_NAME);
-		final RadixIdentity faucetIdentity = RadixIdentities.loadOrCreateEncryptedFile(keyFile, password);
+
+		// Identity configuration
+		final RadixIdentity faucetIdentity;
+		final String unencryptedKeyFile = System.getenv(RADIX_IDENTITY_UNENCRYPTED_KEY_FILE_ENV_NAME);
+		if (unencryptedKeyFile != null) {
+			faucetIdentity = RadixIdentities.loadOrCreateFile(unencryptedKeyFile);
+		} else {
+			final String keyFile = System.getenv(RADIX_IDENTITY_KEY_FILE_ENV_NAME);
+			final String password = System.getenv(RADIX_IDENTITY_KEY_FILE_PASSWORD_ENV_NAME);
+			faucetIdentity = RadixIdentities.loadOrCreateEncryptedFile(keyFile, password);
+		}
+
 		final RadixApplicationAPI api = RadixApplicationAPI.create(config, faucetIdentity);
 		final RRI tokenRRI = RRI.fromString(tokenRRIString);
 		final long delay = faucetDelayString != null ? Long.parseLong(faucetDelayString) : DEFAULT_DELAY;
