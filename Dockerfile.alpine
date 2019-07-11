@@ -14,13 +14,14 @@ RUN mv /opt/faucet-service-* /opt/faucet-service && \
     mkdir /opt/faucet-service/etc && \
     chown -R nobody:nogroup /opt/faucet-service
 
-# volumize
-VOLUME /opt/faucet-service/etc
+COPY docker/docker-entrypoint.sh /
 
 # workdir
 WORKDIR /opt/faucet-service
 
 # entrypoint
-ENTRYPOINT ["./bin/faucet-service"]
+ENTRYPOINT ["/docker-entrypoint.sh"]
+
+CMD ["./bin/faucet-service"]
 
 USER nobody:nogroup
