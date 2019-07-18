@@ -34,7 +34,10 @@ public class Faucet {
 	private static final String FAUCET_DELAY_ENV_NAME = "FAUCET_DELAY";
 	private static final String UNIQUE_MESSAGE_PREFIX = "faucet-msg-";
 	private static final String UNIQUE_SEND_TOKENS_PREFIX = "faucet-tx-";
-	private static final long DEFAULT_DELAY = 1000 * 60 * 10; //10min
+	// Default timeout set at 1 minute.  The default test and dev universes typically
+	// have 1_000_000_000 XRD initially, and draining the faucet at the rate of 10 XRD/minute
+	// will take a little less than 200 years before all the XRD are gone.
+	private static final long DEFAULT_DELAY = 1000L * 60L; // 1 min
 
 	private final RadixApplicationAPI api;
 	private final RRI tokenRRI;
@@ -73,6 +76,7 @@ public class Faucet {
 			return;
 		}
 
+		rateLimiter.reset();
 		Transaction transaction = this.api.createTransaction();
 		transaction.stage(TransferTokensAction.create(tokenRRI, api.getAddress(), msg.getFrom(), amountToSend));
 		transaction.stage(PutUniqueIdAction.create(transferMutexAcquire));
@@ -138,10 +142,11 @@ public class Faucet {
 	 * Simple Rate Limiter helper class
 	 */
 	private static class RateLimiter {
-		private final AtomicLong lastTimestamp = new AtomicLong();
+		private final AtomicLong lastTimestamp;
 		private final long millis;
 
 		private RateLimiter(long millis) {
+			this.lastTimestamp = new AtomicLong(System.currentTimeMillis() - millis);
 			this.millis = millis;
 		}
 
@@ -153,7 +158,7 @@ public class Faucet {
 		}
 
 		boolean check() {
-			return lastTimestamp.get() == 0 || (System.currentTimeMillis() - lastTimestamp.get() > millis);
+			return System.currentTimeMillis() - lastTimestamp.get() >= millis;
 		}
 
 		void reset() {
