@@ -22,7 +22,6 @@
 
 package com.radixdlt.examples;
 
-import com.google.common.collect.ImmutableMap;
 import com.radixdlt.client.application.RadixApplicationAPI;
 import com.radixdlt.client.application.RadixApplicationAPI.Result;
 import com.radixdlt.client.application.RadixApplicationAPI.Transaction;
@@ -37,7 +36,6 @@ import com.radixdlt.client.core.BootstrapConfig;
 import com.radixdlt.client.core.RadixEnv;
 import com.radixdlt.client.core.atoms.particles.RRI;
 import java.math.BigDecimal;
-import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
