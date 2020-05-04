@@ -22,7 +22,6 @@
 
 package com.radixdlt.examples;
 
-import com.google.common.collect.ImmutableMap;
 import com.radixdlt.client.application.RadixApplicationAPI;
 import com.radixdlt.client.application.RadixApplicationAPI.Result;
 import com.radixdlt.client.application.RadixApplicationAPI.Transaction;
@@ -33,15 +32,13 @@ import com.radixdlt.client.application.translate.data.SendMessageAction;
 import com.radixdlt.client.application.translate.tokens.TransferTokensAction;
 import com.radixdlt.client.application.translate.unique.PutUniqueIdAction;
 import com.radixdlt.client.atommodel.accounts.RadixAddress;
-import com.radixdlt.client.core.Bootstrap;
+import com.radixdlt.client.core.BootstrapConfig;
+import com.radixdlt.client.core.RadixEnv;
 import com.radixdlt.client.core.atoms.particles.RRI;
 import java.math.BigDecimal;
-import java.util.Arrays;
-import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.stream.Collectors;
 import org.radix.utils.RadixConstants;
 
 /**
@@ -49,7 +46,7 @@ import org.radix.utils.RadixConstants;
  * a Radix Universe.
  */
 public class Faucet {
-	private static final String RADIX_BOOTSTRAP_CONFIG_ENV_NAME = "RADIX_BOOTSTRAP_CONFIG";
+	private static final String RADIX_IDENTITY_UNENCRYPTED_KEY_FILE_ENV_NAME = "RADIX_IDENTITY_UNENCRYPTED_KEY_FILE";
 	private static final String RADIX_IDENTITY_KEY_FILE_ENV_NAME = "RADIX_IDENTITY_KEY_FILE";
 	private static final String RADIX_IDENTITY_KEY_FILE_PASSWORD_ENV_NAME = "RADIX_IDENTITY_KEY_FILE_PASSWORD";
 	private static final String FAUCET_TOKEN_RRI_ENV_NAME = "FAUCET_TOKEN_RRI";
@@ -189,33 +186,45 @@ public class Faucet {
 	}
 
 	public static void main(String[] args) throws Exception {
-		final String universeOptions = String.join("|", Arrays.stream(Bootstrap.values()).map(Bootstrap::name).collect(Collectors.toList()));
-		final Map<String, String> requiredEnvVars = ImmutableMap.of(
-			RADIX_BOOTSTRAP_CONFIG_ENV_NAME, " must be set to: <" + universeOptions + ">",
-			FAUCET_TOKEN_RRI_ENV_NAME, " must be set to: <rri-of-token>",
-			RADIX_IDENTITY_KEY_FILE_ENV_NAME, "must be set to: <path-to-keyfile>",
-			RADIX_IDENTITY_KEY_FILE_PASSWORD_ENV_NAME, "must be set to: <password>"
-		);
+		// Bootstrap configuration
+		final BootstrapConfig config = RadixEnv.getBootstrapConfig();
 
-		for (String envVar : requiredEnvVars.keySet()) {
-			String val = System.getenv(envVar);
-			if (val == null) {
-				System.out.println("Env var " + envVar + requiredEnvVars.get(envVar));
-				System.exit(-1);
-			}
-		}
-
-		final String universeString = System.getenv(RADIX_BOOTSTRAP_CONFIG_ENV_NAME);
-		final String tokenRRIString = System.getenv(FAUCET_TOKEN_RRI_ENV_NAME);
-		final String faucetDelayString = System.getenv(FAUCET_DELAY_ENV_NAME);
+		// Identity configuration
+		final RadixIdentity faucetIdentity;
+		final String unencryptedKeyFile = System.getenv(RADIX_IDENTITY_UNENCRYPTED_KEY_FILE_ENV_NAME);
 		final String keyFile = System.getenv(RADIX_IDENTITY_KEY_FILE_ENV_NAME);
 		final String password = System.getenv(RADIX_IDENTITY_KEY_FILE_PASSWORD_ENV_NAME);
-		final RadixIdentity faucetIdentity = RadixIdentities.loadOrCreateEncryptedFile(keyFile, password);
-		final RadixApplicationAPI api = RadixApplicationAPI.create(Bootstrap.valueOf(universeString), faucetIdentity);
+		if (unencryptedKeyFile != null) {
+			faucetIdentity = RadixIdentities.loadOrCreateFile(unencryptedKeyFile);
+		} else if (keyFile != null && password != null){
+			faucetIdentity = RadixIdentities.loadOrCreateEncryptedFile(keyFile, password);
+		} else {
+			System.out.println("Identity must be set via env vars:");
+			System.out.println(RADIX_IDENTITY_KEY_FILE_ENV_NAME + "=/<path>/encrypted.key");
+			System.out.println(RADIX_IDENTITY_KEY_FILE_PASSWORD_ENV_NAME + "=<password>");
+			System.out.println("or");
+			System.out.println(RADIX_IDENTITY_UNENCRYPTED_KEY_FILE_ENV_NAME + "=/<path>/unencrypted.key");
+			System.exit(-1);
+			return;
+		}
+
+		// Token RRI configuration
+		final String tokenRRIString = System.getenv(FAUCET_TOKEN_RRI_ENV_NAME);
+		if (tokenRRIString == null) {
+			System.out.println("Env var " + FAUCET_TOKEN_RRI_ENV_NAME + " must be set to: <rri-of-token>");
+			System.exit(-1);
+		}
 		final RRI tokenRRI = RRI.fromString(tokenRRIString);
+
+		// Faucet delay configuration
+		final String faucetDelayString = System.getenv(FAUCET_DELAY_ENV_NAME);
 		final long delay = faucetDelayString != null ? Long.parseLong(faucetDelayString) : DEFAULT_DELAY;
 
-		Faucet faucet = new Faucet(api, tokenRRI, BigDecimal.valueOf(10.0), delay);
+		// Faucet amount
+		final BigDecimal leakAmount = BigDecimal.valueOf(10.0);
+
+		final RadixApplicationAPI api = RadixApplicationAPI.create(config, faucetIdentity);
+		Faucet faucet = new Faucet(api, tokenRRI, leakAmount, delay);
 		faucet.run();
 	}
 }
