@@ -31,16 +31,15 @@ import com.radixdlt.client.application.translate.data.DecryptedMessage;
 import com.radixdlt.client.application.translate.data.SendMessageAction;
 import com.radixdlt.client.application.translate.tokens.TransferTokensAction;
 import com.radixdlt.client.application.translate.unique.PutUniqueIdAction;
-import com.radixdlt.client.atommodel.accounts.RadixAddress;
+import com.radixdlt.identifiers.RadixAddress;
 import com.radixdlt.client.core.BootstrapConfig;
 import com.radixdlt.client.core.RadixEnv;
-import com.radixdlt.client.core.atoms.particles.RRI;
+import com.radixdlt.identifiers.RRI;
 import java.math.BigDecimal;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import org.radix.utils.RadixConstants;
-
+import com.radixdlt.utils.RadixConstants;
 /**
  * A service which sends tokens to whoever sends it a message through
  * a Radix Universe.
@@ -214,7 +213,7 @@ public class Faucet {
 			System.out.println("Env var " + FAUCET_TOKEN_RRI_ENV_NAME + " must be set to: <rri-of-token>");
 			System.exit(-1);
 		}
-		final RRI tokenRRI = RRI.fromString(tokenRRIString);
+		final RRI tokenRRI = RRI.from(tokenRRIString);
 
 		// Faucet delay configuration
 		final String faucetDelayString = System.getenv(FAUCET_DELAY_ENV_NAME);
